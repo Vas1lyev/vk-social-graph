@@ -62,13 +62,13 @@ public final class CentralityOutputWriter {
                 .append("для которых существует checkpoint-файл, и только связи между такими пользователями. ")
                 .append("Необработанный остаток исходной очереди не считается отсутствующим в реальном VK.\n\n");
 
-        appendLeader(report, crawl, "Посредничество", result.scores(), CentralityScore::betweennessApprox,
+        appendTopTable(report, crawl, "Топ-20 по посредничеству", result.scores(), CentralityScore::betweennessApprox,
                 "Показывает, насколько часто участник лежит на кратчайших путях между другими вершинами. "
                         + "Значение оценено методом Brandes по детерминированной выборке источников.");
-        appendLeader(report, crawl, "Близость", result.scores(), CentralityScore::closeness,
+        appendTopTable(report, crawl, "Топ-20 по близости", result.scores(), CentralityScore::closeness,
                 "Показывает, насколько малы кратчайшие расстояния от участника до доступной части графа. "
                         + "Использована нормализация Wasserman–Faust для несвязного графа.");
-        appendLeader(report, crawl, "Центральность собственного вектора", result.scores(), CentralityScore::eigenvector,
+        appendTopTable(report, crawl, "Топ-20 по центральности собственного вектора", result.scores(), CentralityScore::eigenvector,
                 "Высокое значение получают вершины, связанные с другими высокоцентральными вершинами. "
                         + "Вектор рассчитан степенным методом и нормирован так, что максимум графа равен 1.");
 
@@ -172,6 +172,16 @@ public final class CentralityOutputWriter {
                 .append("средние расстояния до остальных пользователей, повышает вероятность прохождения ")
                 .append("кратчайших путей через него и связывает его с другими влиятельными вершинами.\n\n");
 
+        appendTopTable(report, crawl, "Топ-20 по посредничеству", centrality.scores(),
+                CentralityScore::betweennessApprox,
+                "Рейтинг участников по доле кратчайших путей, проходящих через вершину.");
+        appendTopTable(report, crawl, "Топ-20 по близости", centrality.scores(),
+                CentralityScore::closeness,
+                "Рейтинг участников по близости к доступной части наблюдаемого графа.");
+        appendTopTable(report, crawl, "Топ-20 по центральности собственного вектора", centrality.scores(),
+                CentralityScore::eigenvector,
+                "Рейтинг участников с учётом центральности их соседей.");
+
         if (!analysis.seedScores().isEmpty()) {
             var best = analysis.seedScores().getFirst();
             report.append("## Общие знакомства\n\n")
@@ -196,14 +206,7 @@ public final class CentralityOutputWriter {
                 .append("участником по всем трём рассмотренным критериям и одновременно лидирует по числу ")
                 .append("уникальных общих знакомых. Следовательно, в границах собранного среза он занимает ")
                 .append("наиболее выраженную структурную позицию: имеет широкий непосредственный охват, ")
-                .append("находится близко к остальным вершинам и служит важным посредником между частями графа.\n\n")
-                .append("## Ограничения\n\n")
-                .append("Срез не следует называть полной социальной сетью VK. Значения относятся только к ")
-                .append("зафиксированным ").append(centrality.nodeCount()).append(" пользователям. Закрытые и ")
-                .append("удалённые профили представлены лишь доступными связями. Посредничество является ")
-                .append("воспроизводимой оценкой, а не точным перебором всех источников. Выборка сформирована ")
-                .append("вокруг друзей исходной группы, поэтому сравнение корректно между участниками этой ")
-                .append("работы, но не с произвольными пользователями всей сети VK.\n");
+                .append("находится близко к остальным вершинам и служит важным посредником между частями графа.\n");
         Files.writeString(path, report, StandardCharsets.UTF_8);
     }
 
@@ -216,20 +219,25 @@ public final class CentralityOutputWriter {
         return name(crawl.profiles().get(userId), userId);
     }
 
-    private static void appendLeader(StringBuilder report, CrawlResult crawl, String title,
-                                     List<CentralityScore> scores,
-                                     ToDoubleFunction<CentralityScore> metric, String explanation) {
+    private static void appendTopTable(StringBuilder report, CrawlResult crawl, String title,
+                                       List<CentralityScore> scores,
+                                       ToDoubleFunction<CentralityScore> metric, String explanation) {
         List<CentralityScore> ranked = scores.stream()
                 .sorted(Comparator.comparingDouble(metric).reversed()
                         .thenComparingLong(CentralityScore::userId))
                 .toList();
         report.append("## ").append(title).append("\n\n").append(explanation).append("\n\n");
-        for (int i = 0; i < Math.min(5, ranked.size()); i++) {
+        report.append("| Место | Участник | Значение | Степень в срезе | Данные друзей доступны |\n")
+                .append("|---:|---|---:|---:|:---:|\n");
+        for (int i = 0; i < Math.min(20, ranked.size()); i++) {
             CentralityScore score = ranked.get(i);
             UserProfile profile = crawl.profiles().get(score.userId());
-            report.append(i + 1).append(". ").append(markdown(name(profile, score.userId())))
-                    .append(" (`").append(score.userId()).append("`): ")
-                    .append(format(metric.applyAsDouble(score))).append("\n");
+            report.append("| ").append(i + 1).append(" | ")
+                    .append(markdown(name(profile, score.userId())))
+                    .append(" | ").append(format(metric.applyAsDouble(score)))
+                    .append(" | ").append(score.observedDegree())
+                    .append(" | ").append("SUCCESS".equals(crawl.fetchStatuses().get(score.userId())) ? "да" : "нет")
+                    .append(" |\n");
         }
         report.append("\n");
     }

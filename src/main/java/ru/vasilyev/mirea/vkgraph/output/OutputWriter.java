@@ -40,6 +40,7 @@ public final class OutputWriter {
         writeUnavailable(directory.resolve("unavailable_profiles.csv"), crawl);
         writeGraphMl(directory.resolve("graph.graphml"), crawl);
         writeHtml(directory.resolve("graph.html"), crawl);
+        writeFullHtml(directory.resolve("graph_full.html"), crawl);
         writeReport(directory.resolve("report.md"), crawl, analysis);
         writeMetadata(directory.resolve("run-metadata.json"), crawl, input, apiVersion, depth);
         return directory;
@@ -181,6 +182,78 @@ public final class OutputWriter {
                 for(const v of DATA.nodes){const p=pos.get(v.id),hit=q&&(String(v.id).includes(q)||v.label.toLowerCase().includes(q));x.beginPath();x.fillStyle=hit?'#fde047':v.seed?'#f97316':v.seedConnections>=4?'#a78bfa':'#38bdf8';const size=v.seed?8:3+v.seedConnections;x.arc(p[0],p[1],size/zoom,0,6.283);x.fill();if(v.seed||v.seedConnections>=4||hit){x.fillStyle='#e5e7eb';x.font=`${12/zoom}px system-ui`;x.fillText(v.label,p[0]+9/zoom,p[1]-6/zoom)}}x.restore()}
                 c.onwheel=e=>{e.preventDefault();zoom=Math.max(.05,Math.min(8,zoom*(e.deltaY<0?1.12:.89)));draw()};c.onmousedown=e=>{drag=true;lx=e.clientX;ly=e.clientY};onmouseup=()=>drag=false;onmousemove=e=>{if(drag){ox+=e.clientX-lx;oy+=e.clientY-ly;lx=e.clientX;ly=e.clientY;draw()}};
                 document.getElementById('search').oninput=e=>{q=e.target.value.toLowerCase();draw()};resize();</script></body></html>
+                """.formatted(data);
+        Files.writeString(path, html, StandardCharsets.UTF_8);
+    }
+
+    private void writeFullHtml(Path path, CrawlResult crawl) throws IOException {
+        Set<Long> seedIds = Set.copyOf(crawl.seedIds());
+        Map<Long, Integer> degrees = new java.util.HashMap<>();
+        Map<Long, List<Long>> seedNeighbors = new java.util.HashMap<>();
+        for (Edge edge : crawl.edges()) {
+            degrees.merge(edge.source(), 1, Integer::sum);
+            degrees.merge(edge.target(), 1, Integer::sum);
+            if (seedIds.contains(edge.source()) && !seedIds.contains(edge.target())) {
+                seedNeighbors.computeIfAbsent(edge.target(), ignored -> new ArrayList<>()).add(edge.source());
+            }
+            if (seedIds.contains(edge.target()) && !seedIds.contains(edge.source())) {
+                seedNeighbors.computeIfAbsent(edge.source(), ignored -> new ArrayList<>()).add(edge.target());
+            }
+        }
+        List<UserProfile> profiles = crawl.profiles().values().stream()
+                .sorted(Comparator.comparing(UserProfile::seed).reversed()
+                        .thenComparingLong(UserProfile::id))
+                .toList();
+        List<Map<String, Object>> nodes = profiles.stream().map(profile -> {
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("id", profile.id());
+            node.put("label", profile.displayName());
+            node.put("seed", profile.seed());
+            node.put("level", profile.level());
+            node.put("degree", degrees.getOrDefault(profile.id(), 0));
+            node.put("seedNeighbors", seedNeighbors.getOrDefault(profile.id(), List.of()));
+            return node;
+        }).toList();
+        List<Map<String, Long>> edges = crawl.edges().stream().sorted()
+                .map(edge -> Map.of("source", edge.source(), "target", edge.target())).toList();
+        String data = json.writeValueAsString(Map.of("nodes", nodes, "edges", edges)).replace("</", "<\\/");
+        String html = """
+                <!doctype html><html lang="ru"><head><meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <title>Полный граф знакомств VK</title><style>
+                html,body{margin:0;height:100%%;overflow:hidden;font:14px system-ui;background:#0b1020;color:#e5e7eb}
+                #bar{position:fixed;z-index:3;display:flex;gap:12px;align-items:center;padding:10px 14px;background:#0b1020e8;width:100%%;box-sizing:border-box}
+                input{padding:7px;border-radius:6px;border:1px solid #475569;background:#172033;color:white}
+                label{display:flex;gap:6px;align-items:center}.hint{color:#a7b0c0}.legend{margin-left:auto;color:#cbd5e1}
+                canvas{display:block;width:100%%;height:100%%}
+                </style></head><body><div id="bar"><input id="search" placeholder="ID или имя">
+                <label><input id="edges" type="checkbox" checked> связи</label>
+                <span id="stats" class="hint"></span><span class="legend">● участники　● остальные вершины</span></div>
+                <canvas id="graph"></canvas><script>const DATA=%s;
+                const c=document.getElementById('graph'),x=c.getContext('2d'),dpr=devicePixelRatio||1;
+                const seedColor='#f97316',nodeColor='#38bdf8',hitColor='#fde047',textColor='#e5e7eb';
+                document.getElementById('stats').textContent=`Все данные: ${DATA.nodes.length} вершин, ${DATA.edges.length} связей`;
+                const byId=new Map(DATA.nodes.map(v=>[v.id,v])),seeds=DATA.nodes.filter(v=>v.seed),others=DATA.nodes.filter(v=>!v.seed),pos=new Map(),seedPos=new Map();
+                const cols=Math.min(5,seeds.length),rows=Math.ceil(seeds.length/cols),clusterCounters=new Map();
+                seeds.forEach((v,i)=>{const p=[(i%%cols-(cols-1)/2)*900,(Math.floor(i/cols)-(rows-1)/2)*760];pos.set(v.id,p);seedPos.set(v.id,p)});
+                function hash(id){let h=(Number(id)*2654435761)>>>0;h^=h>>>16;return h>>>0}
+                others.forEach((v,i)=>{const near=v.seedNeighbors.map(id=>seedPos.get(id)).filter(Boolean);let cx=0,cy=0,key;
+                if(near.length){for(const p of near){cx+=p[0];cy+=p[1]}cx/=near.length;cy/=near.length;key=v.seedNeighbors[0]}
+                else{key=seeds[hash(v.id)%%seeds.length].id;[cx,cy]=seedPos.get(key)}
+                const n=clusterCounters.get(key)||0;clusterCounters.set(key,n+1);const a=n*2.3999632297+(hash(v.id)%%1000)/1000,r=32+24*Math.sqrt(n);pos.set(v.id,[cx+Math.cos(a)*r,cy+Math.sin(a)*r])});
+                let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;for(const p of pos.values()){minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1])}const pad=120;minX-=pad;maxX+=pad;minY-=pad;maxY+=pad;
+                const layer=document.createElement('canvas'),layerSize=4096;layer.width=layerSize;layer.height=layerSize;const lx=layer.getContext('2d'),sx=layerSize/(maxX-minX),sy=layerSize/(maxY-minY);lx.strokeStyle='rgba(100,116,139,.17)';lx.lineWidth=.55;lx.beginPath();
+                for(const e of DATA.edges){const a=pos.get(e.source),b=pos.get(e.target);if(!a||!b)continue;lx.moveTo((a[0]-minX)*sx,(a[1]-minY)*sy);lx.lineTo((b[0]-minX)*sx,(b[1]-minY)*sy)}lx.stroke();
+                let zoom=.11,ox=0,oy=40,drag=false,mx=0,my=0,q='',showEdges=true,frame=0;
+                function resize(){c.width=innerWidth*dpr;c.height=innerHeight*dpr;schedule()}addEventListener('resize',resize);
+                function schedule(){if(!frame)frame=requestAnimationFrame(draw)}
+                function draw(){frame=0;x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,innerWidth,innerHeight);x.save();x.translate(innerWidth/2+ox,innerHeight/2+oy);x.scale(zoom,zoom);
+                if(showEdges)x.drawImage(layer,minX,minY,maxX-minX,maxY-minY);
+                for(const v of DATA.nodes){const p=pos.get(v.id),hit=q&&(String(v.id).includes(q)||v.label.toLowerCase().includes(q));const radius=v.seed?Math.max(15,5+Math.log2(v.degree+1)*2):hit?15:Math.max(3,Math.min(9,2+Math.log2(v.degree+1)));x.beginPath();x.fillStyle=hit?hitColor:v.seed?seedColor:nodeColor;x.arc(p[0],p[1],radius/Math.sqrt(zoom),0,6.283);x.fill();if(v.seed||hit){x.fillStyle=textColor;x.font=`${Math.max(11,13/zoom)}px system-ui`;x.fillText(v.label,p[0]+18/Math.sqrt(zoom),p[1]-10/Math.sqrt(zoom))}}x.restore()}
+                c.onwheel=e=>{e.preventDefault();const before=zoom;zoom=Math.max(.025,Math.min(5,zoom*(e.deltaY<0?1.15:.87)));const rect=c.getBoundingClientRect(),px=e.clientX-rect.left-innerWidth/2-ox,py=e.clientY-rect.top-innerHeight/2-oy;ox-=px*(zoom/before-1);oy-=py*(zoom/before-1);schedule()};
+                c.onmousedown=e=>{drag=true;mx=e.clientX;my=e.clientY};onmouseup=()=>drag=false;onmousemove=e=>{if(drag){ox+=e.clientX-mx;oy+=e.clientY-my;mx=e.clientX;my=e.clientY;schedule()}};
+                document.getElementById('search').oninput=e=>{q=e.target.value.toLowerCase();schedule()};document.getElementById('edges').onchange=e=>{showEdges=e.target.checked;schedule()};resize();
+                </script></body></html>
                 """.formatted(data);
         Files.writeString(path, html, StandardCharsets.UTF_8);
     }
