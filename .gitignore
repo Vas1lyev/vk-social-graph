@@ -1,0 +1,10 @@
+target/
+.idea/
+*.iml
+.DS_Store
+.env
+state/
+out/
+*.db
+*.db-shm
+*.db-wal
